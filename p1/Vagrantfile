@@ -1,84 +1,75 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+BOX    = "generic/alpine319"
+MEMORY = 1024
+CPUS   = 1
+
+LOGIN  = "mtrullar"
+MASTER = "#{LOGIN}S"
+WORKER = "#{LOGIN}SW"
+
+IP_MASTER = "192.168.56.110"
+IP_WORKER = "192.168.56.111"
+K3S_TOKEN = "iot-lab-shared-token"
+
+# Modules requis par K3s, a charger explicitement sur un noyau Alpine "virt"
+kernel_modules = <<-SHELL
+    modprobe overlay 2>/dev/null || true
+    modprobe br_netfilter 2>/dev/null || true
+    echo overlay >> /etc/modules
+    echo br_netfilter >> /etc/modules
+SHELL
+
+master_script = <<-SHELL
+    apk update
+    apk add curl
+    #{kernel_modules}
+
+    curl -sfL https://get.k3s.io | \
+      K3S_TOKEN=#{K3S_TOKEN} \
+      INSTALL_K3S_EXEC="server --node-ip=#{IP_MASTER} --write-kubeconfig-mode=644 --flannel-iface=eth1" \
+      sh -
+SHELL
+
+worker_script = <<-SHELL
+    apk update
+    apk add curl
+    #{kernel_modules}
+
+    until curl -ks -o /dev/null https://#{IP_MASTER}:6443; do
+      sleep 3
+    done
+
+    curl -sfL https://get.k3s.io | \
+      K3S_URL=https://#{IP_MASTER}:6443 \
+      K3S_TOKEN=#{K3S_TOKEN} \
+      INSTALL_K3S_EXEC="agent --node-ip=#{IP_WORKER} --flannel-iface=eth1" \
+      sh -
+SHELL
+
 Vagrant.configure("2") do |config|
-  # Utilisation de la dernière version stable de Debian pour une compatibilité parfaite avec K3s
-  config.vm.box = "debian/bookworm64"
+  config.vm.box = BOX
+  config.vm.box_check_update = false
+  config.vm.synced_folder ".", "/vagrant", disabled: true
 
-  # ==========================================
-  # Configuration de la machine Serveur (Controller)
-  # ==========================================
-  config.vm.define "mtrullarS" do |server|
-    server.vm.hostname = "mtrullarS"
-    server.vm.network "private_network", ip: "192.168.56.110"
-    
-    server.vm.provider "libvirt" do |vb|
-      vb.name   = "mtrullarS"
-      vb.memory = 1024 # Recommandé pour éviter que le processus K3s ne crash par manque de RAM
-      vb.cpus   = 1
-      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
-      vb.customize ["modifyvm", :id, "--ioapic", "on"]
-    end
-
-    server.vm.provision "shell", inline: <<-SHELL
-      apt-get update -y
-      apt-get install -y curl
-      echo "Installation de K3s en mode Server (Controller)..."
-      
-      # eth1 est l'interface réseau associée à l'IP 192.168.56.x créée par Vagrant
-      curl -sfL https://get.k3s.io | sh -s - server \
-        --node-ip=192.168.56.110 \
-        --bind-address=192.168.56.110 \
-        --flannel-iface=eth1
-
-      # On s'assure que K3s a bien terminé de générer le token
-      while [ ! -f /var/lib/rancher/k3s/server/node-token ]; do
-        sleep 2
-      done
-
-      # Partage du token via le dossier synchronisé de Vagrant
-      cp /var/lib/rancher/k3s/server/node-token /vagrant/node-token
-      chmod 644 /vagrant/node-token
-      echo "Token sauvegardé dans /vagrant/node-token"
-    SHELL
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = MEMORY
+    vb.cpus   = CPUS
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
+    vb.customize ["guestproperty", "set", :id, "/VirtualBox/GuestAdd/VBoxService/--timesync-set-threshold", 10000]
   end
 
-  # ==========================================
-  # Configuration de la machine Worker (Agent)
-  # ==========================================
-  config.vm.define "mtrullarSW" do |worker|
-    worker.vm.hostname = "mtrullarSW"
-    worker.vm.network "private_network", ip: "192.168.56.111"
+  config.vm.define MASTER do |master|
+    master.vm.hostname = MASTER
+    master.vm.network "private_network", ip: IP_MASTER
+    master.vm.provision "shell", inline: master_script
+  end
 
-    worker.vm.provider "libvirt" do |vb|
-      vb.name   = "mtrullarSW"
-      vb.memory = 1024
-      vb.cpus   = 1
-      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
-      vb.customize ["modifyvm", :id, "--ioapic", "on"]
-    end
-
-    worker.vm.provision "shell", inline: <<-SHELL
-      apt-get update -y
-      apt-get install -y curl
-      MAX_WAIT=600
-      WAITED=0
-
-      echo "Attente du token K3s depuis le serveur..."
-      until [ -f /vagrant/node-token ]; do
-        if [ "$WAITED" -ge "$MAX_WAIT" ]; then
-          echo "ERREUR : Token non trouvé après ${MAX_WAIT}s."
-          exit 1
-        fi
-        sleep 5
-        WAITED=$((WAITED + 5))
-      done
-
-      echo "Token reçu ! Installation de K3s en mode Agent (Worker)..."
-      K3S_TOKEN=$(cat /vagrant/node-token)
-
-      curl -sfL https://get.k3s.io | sh -s - agent \
-        --server https://192.168.56.110:6443 \
-        --token ${K3S_TOKEN} \
-        --node-ip=192.168.56.111 \
-        --flannel-iface=eth1
-    SHELL
+  config.vm.define WORKER do |worker|
+    worker.vm.hostname = WORKER
+    worker.vm.network "private_network", ip: IP_WORKER
+    worker.vm.provision "shell", inline: worker_script
   end
 end
