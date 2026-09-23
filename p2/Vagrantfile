@@ -1,0 +1,75 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+# Part 2 : une seule VM, K3s en mode server, Traefik (fourni par K3s)
+# route 3 applications par en-tete Host. Un seul fichier YAML par app.
+
+BOX    = "generic/alpine319"
+MEMORY = 2048
+CPUS   = 2
+
+LOGIN  = "mtrullar"
+MASTER = "#{LOGIN}S"
+
+IP_MASTER = "192.168.56.110"
+
+kernel_modules = <<-SHELL
+    modprobe overlay 2>/dev/null || true
+    modprobe br_netfilter 2>/dev/null || true
+    echo overlay >> /etc/modules
+    echo br_netfilter >> /etc/modules
+SHELL
+
+bootstrap_script = <<-SHELL
+    apk update
+    apk add curl
+    #{kernel_modules}
+
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_EXEC="server --node-ip=#{IP_MASTER} --write-kubeconfig-mode=644 --flannel-iface=eth1" \
+      sh -
+
+    until k3s kubectl get nodes 2>/dev/null | grep -q " Ready"; do
+      sleep 2
+    done
+SHELL
+
+deploy_script = <<-SHELL
+    mkdir -p /root/manifests
+    cp -r /tmp/manifests/* /root/manifests/
+    k3s kubectl apply -f /root/manifests
+SHELL
+
+Vagrant.configure("2") do |config|
+  config.vm.box = BOX
+  config.vm.box_check_update = false
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = MEMORY
+    vb.cpus   = CPUS
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
+    vb.customize ["guestproperty", "set", :id, "/VirtualBox/GuestAdd/VBoxService/--timesync-set-threshold", 10000]
+  end
+
+  config.vm.define MASTER do |node|
+    node.vm.hostname = MASTER
+    node.vm.network "private_network", ip: IP_MASTER
+
+    # 1. installe K3s (dossier partage desactive, pas besoin des guest additions)
+    node.vm.provision "shell", name: "bootstrap-k3s", inline: bootstrap_script
+
+    # 2. prepare le dossier de destination
+    node.vm.provision "shell", name: "prepare-dirs", privileged: false, inline: "mkdir -p /tmp/manifests"
+
+    # 3. copie chaque manifeste : un fichier par app + l'ingress
+    node.vm.provision "file", source: "manifests/app1.yaml",   destination: "/tmp/manifests/app1.yaml"
+    node.vm.provision "file", source: "manifests/app2.yaml",   destination: "/tmp/manifests/app2.yaml"
+    node.vm.provision "file", source: "manifests/app3.yaml",   destination: "/tmp/manifests/app3.yaml"
+    node.vm.provision "file", source: "manifests/ingress.yaml", destination: "/tmp/manifests/ingress.yaml"
+
+    # 4. applique tout sur le cluster
+    node.vm.provision "shell", name: "deploy-apps", inline: deploy_script
+  end
+end
