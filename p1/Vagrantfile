@@ -16,6 +16,10 @@ Vagrant.configure("2") do |config|
   config.vm.define "#{LOGIN}S" do |master|
     master.vm.hostname = "#{LOGIN}S"
     master.vm.network "private_network", ip: IP_MASTER
+    master.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
     master.vm.provision "shell", inline: <<-SHELL
       systemctl disable --now firewalld
       curl -sfL https://get.k3s.io | K3S_TOKEN=#{K3S_TOKEN} sh -s - server \
