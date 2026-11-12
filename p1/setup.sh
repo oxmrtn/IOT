@@ -44,4 +44,4 @@ vagrant plugin install vagrant-libvirt
 grep -q VAGRANT_DEFAULT_PROVIDER ~/.bashrc || \
     echo 'export VAGRANT_DEFAULT_PROVIDER=libvirt' >> ~/.bashrc
 
-[ -e /dev/kvm ] || echo "ATTENTION : /dev/kvm absent, mettre lv.driver = \"qemu\" dans le Vagrantfile"
+[ -e /dev/kvm ]
